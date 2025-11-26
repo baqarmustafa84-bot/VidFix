@@ -44,7 +44,6 @@ def run_ffmpeg(cmd: list):
         proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return proc.stdout
     except subprocess.CalledProcessorError as e:
-        # include stderr to help debugging
         err = e.stderr or e.stdout or str(e)
         raise RuntimeError(err.strip())
     
@@ -56,8 +55,74 @@ def save_upload(file_storage, folder: str) -> str:
     return path
 
 # ------------------
-# Routes - Dashboard
+# Routes 
 # ------------------
 @app.route("/")
 def index():
     return render_template("index.html")
+
+@app.route("/compress", methods=["GET", "POST"])
+def compress():
+    if request.method == "GET":
+        return render_template("compress.html")
+    file = request.files.get("video")
+    if not file or file.filename == "":
+        flash("No file selected.")
+        return redirect(request.url)
+    if not allowed_file(file.filename):
+        flash("Unsupported file type.")
+        return redirect(request.url)
+
+    crf = request.form.get("crf", "28")
+    try:
+        crf_val = int(crf)
+        if not (10 <= crf_val <= 51):
+            raise ValueError()
+    except ValueError:
+        flash("CRF must be an integer between 10 and 51.")
+        return redirect(request.url)
+
+    in_path = save_upload(file)
+    out_name = f"{uuid.uuid4().hex[:8]}_compressed.mp4"
+    out_path = Path(app.config["PROCESSED_DIR"]) / out_name
+
+    cmd = ["ffmpeg", "-y", "-i", in_path, "-vcodec", "libx264", "-crf", str(crf_val), "-preset", "medium", str(out_path)]
+    try:
+        run_ffmpeg(cmd)
+    except RuntimeError as e:
+        flash(f"Compression failed: {e}")
+        return redirect(request.url)
+
+    return redirect(url_for("download_file", filename=out_name))
+
+@app.route("/convert", methods=["GET", "POST"])
+def convert():
+    if request.method == "GET":
+        return render_template("convert.html")
+    file = request.files.get("video")
+    if not file or file.filename == "":
+        flash("No file selected.")
+        return redirect(request.url)
+    if not allowed_file(file.filename):
+        flash("Unsupported file type.")
+        return redirect(request.url)
+
+    audio_format = request.form.get("format", "mp3").lower()
+    codec_map = {"mp3":"libmp3lame", "wav":"pcm_s16le", "aac":"aac", "m4a":"aac"}
+    if audio_format not in codec_map:
+        flash("Unsupported audio format.")
+        return redirect(request.url)
+
+    in_path = save_upload(file)
+    out_name = f"{uuid.uuid4().hex[:8]}.{audio_format}"
+    out_path = Path(app.config["PROCESSED_DIR"]) / out_name
+
+    cmd = ["ffmpeg", "-y", "-i", in_path, "-vn", "-acodec", codec_map[audio_format], str(out_path)]
+    try:
+        run_ffmpeg(cmd)
+    except RuntimeError as e:
+        flash(f"Conversion failed: {e}")
+        return redirect(request.url)
+
+    return redirect(url_for("download_file", filename=out_name))
+
